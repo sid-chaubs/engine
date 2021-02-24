@@ -1,0 +1,30 @@
+name: Docs Deployment Pipeline
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - 'docs/**'
+      - 'docs/*'
+  pull_request:
+    branches: [development, main]
+    paths:
+      - 'docs/**'
+      - 'docs/*'
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checking out last commit
+        uses: actions/checkout@v2
+      - name: Setting up python
+        uses: actions/setup-python@v2
+        with:
+          python-version: 3.x
+      - name: Installing MkDocs-Material
+        run: |
+          pip install mkdocs-material
+      - name: Deploying to GitHub Pages
+        run: |
+          mkdocs gh-deploy --force
