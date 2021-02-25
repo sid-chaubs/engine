@@ -1,0 +1,15 @@
+name: Unit Test for Pull Requests
+
+on:
+    pull_request: [development, main]
+    workflow_dispatch:
+
+jobs:
+    build:
+        runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v2
+
+      - name: Run the tests
+        run: pytest
