@@ -2,7 +2,7 @@ name: Unit Test for Pull Requests
 
 on:
     pull_request:
-        branches: [main, development]
+        branches: [main, development, fix/pipeline-update]
     workflow_dispatch:
 
 jobs:
