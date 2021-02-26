@@ -1,13 +1,16 @@
 from collections import namedtuple
 
+import numpy as np
 import ccxt
 import re
 import json
 import sys
+from collections import defaultdict
 from models.ohlcv import OHLCV
 from models.ohlcv_encoder import OHLCVEncoder
 from os import path
 import os
+
 
 # ======================================================================
 # DataModule is responsible for downloading OHLCV data, preparing it
@@ -82,26 +85,36 @@ class DataModule:
         :return: None
         :rtype: None
         """
+        # for pair in self.config['pairs']:
+        #     if not self.check_for_datafile_existence(pair, self.config['timeframe']):
+        #         # datafile doesn't exist. Start downloading data, create datafile
+        #         print("[INFO] Did not find datafile for %s" % pair)
+        #         self.download_data_for_pair(pair, True)
+        #     elif self.does_datafile_cover_backtesting_period(pair, self.config['timeframe']):
+        #         # load data from datafile instead of exchange
+        #         self.read_data_from_datafile(pair, self.config['timeframe'])
+        #     elif not self.does_datafile_cover_backtesting_period(pair, self.config['timeframe']):
+        #         # remove file, download data from exchange, create new datafile
+        #         if self.check_for_datafile_existence(pair, self.config['timeframe']):
+        #             self.delete_file(pair, self.config['timeframe'])
+        #         self.download_data_for_pair(pair, True)
+
         for pair in self.config['pairs']:
-            if not self.check_for_datafile_existence(pair, self.config['timeframe']):
-                # datafile doesn't exist. Start downloading data, create datafile
+            if not self.check_datafolder(pair):
                 print("[INFO] Did not find datafile for %s" % pair)
-                self.history_data[pair] = []
-                self.download_data_for_pair(pair, True)
-            elif self.does_datafile_cover_backtesting_period(pair, self.config['timeframe']):
-                # load data from datafile instead of exchange
-                self.history_data[pair] = []
-                self.read_data_from_datafile(pair, self.config['timeframe'])
-            elif not self.does_datafile_cover_backtesting_period(pair, self.config['timeframe']):
-                # remove file, download data from exchange, create new datafile
-                self.history_data[pair] = []
-                if self.check_for_datafile_existence(pair, self.config['timeframe']):
-                    self.delete_file(pair, self.config['timeframe'])
-                self.download_data_for_pair(pair, True)
+                pair_dict = self.download_data_for_pair(pair, self.backtesting_from, self.backtesting_to)
+            else:
+                print("[INFO] Checking datafile for %s" % pair)
+                pair_dict = self.read_data_from_datafile(pair)
+                if not pair_dict:
+                    print("[INFO] Datafile incorrect. Downloading new data for %s" % pair)
+                    self.delete_file(pair)
+                    pair_dict = self.download_data_for_pair(pair, self.backtesting_from, self.backtesting_to)
+            self.history_data[pair] = pair_dict
 
         self.backtesting_module.start_backtesting(self.history_data, self.backtesting_from, self.backtesting_to)
 
-    def parse_ohcl_data(self, data, pair: str) -> [OHLCV]:
+    def parse_ohlcv_data(self, data, pair: str) -> [OHLCV]:
         """
         :param data: OHLCV data provided by CCXT in array format []
         :type data: float array
@@ -110,13 +123,13 @@ class DataModule:
         :return: OHLCV array
         :rtype: [OHLCV]
         """
-        return_value = []
+        return_value = {}
         for candle in data:
-            temp = OHLCV(candle[0], candle[1], candle[2], candle[3], candle[4], candle[5], pair)
-            return_value.append(temp)
+            ohlcv = OHLCV(candle, pair)
+            return_value[candle[0]] = ohlcv
         return return_value
 
-    def download_data_for_pair(self, pair: str, write_to_datafile: bool) -> None:
+    def download_data_for_pair(self, pair: str, data_from: str, data_to: str) -> dict:
         """
         :param pair: Certain coin pair in "AAA/BBB" format
         :type pair: string
@@ -125,20 +138,28 @@ class DataModule:
         :return: None
         :rtype: None
         """
-        testing_from = self.backtesting_from
-        testing_to = self.backtesting_to
-        timeframe = self.config['timeframe']
+        start_date = data_from
+        fetch_ohlcv_limit = 1000
+
         print("[INFO] Downloading %s's data" % pair)
+        
+        return_dict = {}
+        while start_date < data_to:
+            # Request ticks for given pair (maximum = 1000)
+            remaining_ticks = (data_to - start_date) / self.timeframe_calc
+            asked_ticks = min(remaining_ticks, fetch_ohlcv_limit)
+            result = self.exchange.fetch_ohlcv(symbol=pair, timeframe=self.config['timeframe'], \
+                                                since=int(start_date), limit=int(asked_ticks))
 
-        while testing_from < testing_to:
-            result = self.exchange.fetch_ohlcv(pair, timeframe, testing_from)
-            self.history_data[pair] += self.parse_ohcl_data(result, pair)
-            testing_from += len(result) * self.timeframe_calc
+            # Store OHLCV data in dictionary
+            temp_dict = self.parse_ohlcv_data(result, pair)
+            return_dict = {**return_dict, **temp_dict}
+            start_date += np.around(asked_ticks * self.timeframe_calc)
 
-        if write_to_datafile:
-            self.create_new_datafile(self.history_data[pair], pair, timeframe)
+        print("[INFO] [%s] %s candles downloaded" % (pair, len(return_dict)))
 
-        print("[INFO] [%s] %s candles downloaded" % (pair, len(self.history_data[pair])))
+        self.save_file(pair, return_dict)
+        return return_dict
 
     def config_timeframe_calc(self) -> None:
         """
@@ -171,19 +192,18 @@ class DataModule:
         test_to = self.config['backtesting-to']
         test_till_now = self.config['backtesting-till-now']
 
+        self.backtesting_from = self.exchange.parse8601("%sT00:00:00Z" % test_from)
         if test_till_now == 'True':
             print('[INFO] Gathering data from %s until now' % test_from)
             self.backtesting_to = self.exchange.milliseconds()
-            self.backtesting_from = self.exchange.parse8601("%sT00:00:00Z" % test_from)
         elif test_till_now == 'False':
             print('[INFO] Gathering data from %s until %s' % (test_from, test_to))
-            self.backtesting_from = self.exchange.parse8601("%sT00:00:00Z" % test_from)
             self.backtesting_to = self.exchange.parse8601("%sT00:00:00Z" % test_to)
         else:
             print(
                 "[ERROR] Something went wrong parsing config. Please use yyyy-mm-dd format at 'backtesting-from', 'backtesting-to'")
 
-    def check_for_datafile_existence(self, pair: str, timeframe: str) -> bool:
+    def check_datafolder(self, pair: str) -> bool:
         """
         :param pair: Certain coin pair in "AAA/BBB" format
         :type pair: string
@@ -192,28 +212,31 @@ class DataModule:
         :return: Returns whether datafile for specified pair / timeframe already exists
         :rtype: boolean
         """
-        dirpath = os.path.join("data/backtesting-data", self.config["exchange"])
-        coin, base = pair.split("/")
-        exchange_path = os.path.join("data/backtesting-data", self.config["exchange"], "data-" + coin + base + timeframe + ".json")
-        self.create_directory_if_not_exists(dirpath)
-        return path.exists(exchange_path)
+        # Check if datafolder exists
+        filename = self.generate_datafile_name(pair)
+        exchange_path = os.path.join("data/backtesting-data", self.config["exchange"])
+        if not path.exists(exchange_path):
+            self.create_directory(exchange_path)
 
-    def create_directory_if_not_exists(self, directory: str) -> None:
+        # Checks if datafile exists
+        dirpath = os.path.join(exchange_path, filename)
+        return path.exists(dirpath)
+
+    def create_directory(self, directory: str) -> None:
         """
         :param directory: string of path to directory
         :type directory: string
         :return: None
         :rtype: None
         """
-        if not path.exists(directory):
-            try:
-                os.makedirs(directory)
-            except OSError:
-                print("Creation of the directory %s failed" % path)
-            else:
-                print("Successfully created the directory %s " % path)
+        try:
+            os.makedirs(directory)
+        except OSError:
+            print("Creation of the directory %s failed" % path)
+        else:
+            print("Successfully created the directory %s " % path)
 
-    def read_data_from_datafile(self, pair, timeframe) -> None:
+    def read_data_from_datafile(self, pair) -> dict:
         """
         When datafile is covering requested backtesting period,
         this method reads the data from the files. Saves this in
@@ -225,7 +248,7 @@ class DataModule:
         :return: None
         :rtype: None
         """
-        filename = self.generate_datafile_name(pair, timeframe)
+        filename = self.generate_datafile_name(pair)
         filepath = os.path.join("data/backtesting-data/", self.config["exchange"], filename)
         try:
             with open(filepath, 'r') as datafile:
@@ -237,13 +260,21 @@ class DataModule:
             print("[ERROR] Something went wrong loading datafile", sys.exc_info()[0])
             raise SystemExit
 
-        historic_data = json.loads(data)
         print("[INFO] Loading historic data of %s from existing datafile." % pair)
-        for tick in historic_data['ohlcv']:
-            parsed_tick = json.loads(tick, object_hook=self.customOHLCVDecoder)
-            self.history_data[pair].append(parsed_tick)
 
-    def create_new_datafile(self, data: [OHLCV], pair: str, timeframe: str) -> None:
+        # Check backtesting period
+        historic_data = json.loads(data)
+        if historic_data["from"] == self.backtesting_from and historic_data["to"] == self.backtesting_to:
+            # Load json file if in correct range
+            return_dict = {}
+            for tick in historic_data['ohlcv']:
+                parsed_tick = json.loads(tick)
+                ohlcv_class = OHLCV(list(parsed_tick.values()), pair)
+                return_dict = {**return_dict, **{ohlcv_class.time: ohlcv_class}}
+            return return_dict
+        return None
+
+    def save_file(self, pair: str, data: dict) -> None:
         """
         Method creates new json datafile for pair in timeframe
         :param data: Downloaded data to write to the datafile
@@ -260,27 +291,26 @@ class DataModule:
             "to" : self.backtesting_to,
             "ohlcv" : []
         }
-        filename = self.generate_datafile_name(pair, timeframe)
+        filename = self.generate_datafile_name(pair)
         filepath = os.path.join("data/backtesting-data/", self.config["exchange"], filename)
         for tick in data:
-            json_ohlcv = OHLCVEncoder().encode(tick)
+            ohlcv = data[tick]
+            json_ohlcv = OHLCVEncoder().encode(ohlcv)
             data_for_file["ohlcv"].append(json_ohlcv)
         with open(filepath, 'w') as outfile:
-            json.dump(data_for_file, outfile)
+            json.dump(data_for_file, outfile, indent=4)
 
-    def generate_datafile_name(self, pair: str, timeframe: str) -> str:
+    def generate_datafile_name(self, pair: str) -> str:
         """
         :param pair: Certain coin pair in "AAA/BBB" format
         :type pair: string
-        :param timeframe: Time frame of coin pair f.e. "1h" / "5m"
-        :type timeframe: string
         :return: returns a filename for specified pair / timeframe
         :rtype: string
         """
         coin, base = pair.split('/')
-        return "data-" + coin + base + timeframe + ".json"
+        return "data-{}{}{}.json".format(coin, base, self.config['timeframe'])
 
-    def delete_file(self, pair: str, timeframe: str):
+    def delete_file(self, pair: str):
         """
         Method removes existing datafile, as it does not cover requested
         backtesting period.
@@ -291,35 +321,9 @@ class DataModule:
         :return: None
         :rtype: None
         """
-        filename = self.generate_datafile_name(pair, timeframe)
+        filename = self.generate_datafile_name(pair)
         filepath = os.path.join("data/backtesting-data/", self.config["exchange"], filename)
         os.remove(filepath)
-
-    def does_datafile_cover_backtesting_period(self, pair: str, timeframe: str) -> bool:
-        """
-        :param pair: Certain coin pair in "AAA/BBB" format
-        :type pair: string
-        :param timeframe: Time frame of coin pair f.e. "1h" / "5m"
-        :type timeframe: string
-        :return: Returns True if datafile covers set backtesting timespan, False if not
-        :rtype: boolean
-        """
-        filename = self.generate_datafile_name(pair, timeframe)
-        filepath = os.path.join("data/backtesting-data/", self.config["exchange"], filename)
-        try:
-            with open(filepath, 'r') as datafile:
-                data = datafile.read()
-        except FileNotFoundError:
-            print("[ERROR] Backtesting datafile was not found.")
-            return False
-        except:
-            print("[ERROR] Something went wrong loading datafile", sys.exc_info()[0])
-            return False
-
-        historic_data = json.loads(data)
-        if historic_data["from"] == self.backtesting_from and historic_data["to"] == self.backtesting_to:
-            return True
-        return False
 
     def customOHLCVDecoder(self, ohlcv_dict) -> namedtuple:
         """

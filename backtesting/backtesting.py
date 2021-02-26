@@ -48,19 +48,19 @@ class BackTesting:
         self.data = data
         self.backtesting_from = backtesting_from
         self.backtesting_to = backtesting_to
+
         print('[INFO] Starting backtest...')
 
-        data_per_tick = defaultdict(self.default_empty_array_dict)
-        for pair in data:
-            for tick in data[pair]:
-                data_per_tick[tick.time].append(tick)
-
         ticks_passed_per_pair = defaultdict(self.default_empty_array_dict)
-        for tick in data_per_tick:
-            for pair_tick in data_per_tick[tick]:
+        temp_dict = list(data.values())[0]
+        ticks = sorted(list(temp_dict.keys()))  # timestamps
+        for tick in ticks:
+            
+            for pair in data.keys():
+                pair_tick = data[pair][tick]
                 self.trading_module.tick(
-                    pair_tick, ticks_passed_per_pair[pair_tick.pair])
-                ticks_passed_per_pair[pair_tick.pair].append(pair_tick)
+                    pair_tick, ticks_passed_per_pair[pair])
+                ticks_passed_per_pair[pair].append(pair_tick)
 
         open_trades = self.trading_module.open_trades
         closed_trades = self.trading_module.closed_trades

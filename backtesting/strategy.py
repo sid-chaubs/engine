@@ -1,5 +1,6 @@
 import numpy
 import talib as ta
+from pandas import DataFrame
 
 from models.ohlcv import OHLCV
 from models.trade import Trade
@@ -14,7 +15,7 @@ from models.trade import Trade
 class Strategy:
     min_candles = 21
 
-    def generate_indicators(self, past_candles: [OHLCV], current_candle: OHLCV) -> {}:
+    def generate_indicators(self, past_candles: DataFrame, current_candle: DataFrame) -> DataFrame:
         """
         :param past_candles: Array of candle-data (OHLCV models)
         :type past_candles: [OHLCV]
@@ -25,7 +26,7 @@ class Strategy:
         """
         return {}
 
-    def buy_signal(self, indicators, current_candle: OHLCV) -> bool:
+    def buy_signal(self, indicators: DataFrame, current_candle: DataFrame) -> DataFrame:
         """
         :param indicators: indicator dictionary created by generate_indicators method
         :type indicators: dictionary
@@ -34,9 +35,10 @@ class Strategy:
         :return: returns whether to buy or not buy specified coin (True = buy, False = skip)
         :rtype: boolean
         """
-        return True
+        current_candle['buy'] = 1
+        return current_candle
 
-    def sell_signal(self, indicators, current_candle, trade: Trade) -> bool:
+    def sell_signal(self, indicators: DataFrame, current_candle: DataFrame, trade: Trade) -> DataFrame:
         """
         :param indicators: indicator dictionary created by generate_indicators method
         :type indicators: dictionary
@@ -47,7 +49,5 @@ class Strategy:
         :return: returns whether to close or not close specified trade (True = sell, False = skip)
         :rtype: boolean
         """
-        # # print
-        # if trade.profit_percentage > 2:
-        #     return True
-        return False
+        current_candle['sell'] = 0
+        return current_candle

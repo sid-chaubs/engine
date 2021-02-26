@@ -2,6 +2,7 @@ from backtesting.strategy import Strategy
 from models.ohlcv import OHLCV
 from models.trade import Trade
 from datetime import datetime
+from pandas import DataFrame
 
 # ======================================================================
 # TradingModule is responsible for tracking trades, calling strategy methods
@@ -60,9 +61,13 @@ class TradingModule:
         :return: None
         :rtype: None
         """
-        indicators = self.strategy.generate_indicators(data, ohlcv)
-        buy = self.strategy.buy_signal(indicators, ohlcv)
-        if buy:
+        ohlcv_data = [ohlcv_tick.get_data() for ohlcv_tick in data]
+        past_candles = DataFrame(ohlcv_data, columns=ohlcv.get_indicator_names())
+        current_candle = DataFrame([ohlcv.get_data()], columns=ohlcv.get_indicator_names())
+
+        indicators = self.strategy.generate_indicators(past_candles, current_candle)
+        signal = self.strategy.buy_signal(indicators, current_candle)
+        if signal['buy'].iloc[0] == 1:
             self.open_trade(ohlcv)
 
     def open_trade_tick(self, ohlcv: OHLCV, data: [OHLCV], trade: Trade) -> None:
@@ -86,10 +91,14 @@ class TradingModule:
         if stoploss or roi:
             return
 
-        indicators = self.strategy.generate_indicators(data, ohlcv)
-        sell = self.strategy.sell_signal(indicators, ohlcv, trade)
+        ohlcv_data = [ohlcv.get_data() for ohlcv in data]
+        past_candles = DataFrame(ohlcv_data, columns=ohlcv.get_indicator_names())
+        current_candle = DataFrame([ohlcv.get_data()], columns=ohlcv.get_indicator_names())
 
-        if sell:
+        indicators = self.strategy.generate_indicators(past_candles, current_candle)
+        signal = self.strategy.sell_signal(indicators, current_candle, trade)
+
+        if signal['sell'].iloc[0] == 1:
             self.close_trade(trade, reason="Sell signal", ohlcv=ohlcv)
 
     def close_trade(self, trade: Trade, reason: str, ohlcv: OHLCV) -> None:
